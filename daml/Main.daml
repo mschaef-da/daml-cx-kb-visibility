@@ -1,0 +1,101 @@
+module Main where
+
+import Daml.Script
+
+type AssetKey = (Party, Text)
+
+template AssetProposal
+  with
+    issuer  : Party
+    owner   : Party
+    fiutur  : Party
+    name    : Text
+    secret  : Text
+  where
+    ensure name /= ""
+    signatory issuer
+    observer owner, fiutur
+
+    choice Approve : ContractId Asset
+      with
+        smartId: Text
+      controller fiutur
+      do create Asset 
+          with
+            smartId = smartId
+            ..
+
+template Asset
+  with
+    issuer  : Party
+    owner   : Party
+    fiutur  : Party
+    smartId : Text
+    name    : Text
+    secret  : Text
+  where
+    ensure name /= ""
+    signatory fiutur, issuer
+    observer owner
+
+    key (fiutur, smartId): AssetKey
+    maintainer key._1
+
+    choice Give : ContractId Asset
+      with
+        newOwner : Party
+      controller owner
+      do create this with
+           owner = newOwner
+
+setup : Script ()
+setup = script do
+-- user_setup_begin
+  alice <- allocatePartyWithHint "Alice" (PartyIdHint "Alice")
+  bob <- allocatePartyWithHint "Bob" (PartyIdHint "Bob")
+  fiutur <- allocatePartyWithHint "Fiutur" (PartyIdHint "Fiutur")
+
+  aliceId <- validateUserId "alice"
+  bobId <- validateUserId "bob"
+  fiuturId <- validateUserId "fiutur"
+
+  createUser (User aliceId (Some alice)) [CanActAs alice]
+  createUser (User bobId (Some bob)) [CanActAs bob]
+  createUser (User fiuturId (Some bob)) [CanActAs fiutur]
+
+-- user_setup_end
+
+  tvp1 <- submit alice do
+    createCmd AssetProposal with
+      issuer = alice
+      owner = alice
+      fiutur = fiutur
+      name = "TV One"
+      secret = "secret-1"
+
+  tv1 <- submit fiutur do
+    exerciseCmd tvp1 Approve with smartId = "tv-1"
+    
+  tvp2 <- submit alice do
+    createCmd AssetProposal with
+      issuer = alice
+      owner = alice
+      fiutur = fiutur
+      name = "TV Two"
+      secret = "secret-2"
+
+  tv2 <- submit fiutur do
+    exerciseCmd tvp2 Approve with smartId = "tv-2"
+    
+  tvp3 <- submit bob do
+    createCmd AssetProposal with
+      issuer = bob
+      owner = bob
+      fiutur = fiutur
+      name = "TV Two"
+      secret = "secret-2"
+
+  tv3 <- submit fiutur do
+    exerciseCmd tvp3 Approve with smartId = "tv-3"
+    
+  pure ()
