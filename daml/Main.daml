@@ -10,7 +10,6 @@ template AssetProposal
     owner   : Party
     fiutur  : Party
     name    : Text
-    secret  : Text
   where
     ensure name /= ""
     signatory issuer
@@ -32,7 +31,6 @@ template Asset
     fiutur  : Party
     smartId : Text
     name    : Text
-    secret  : Text
   where
     ensure name /= ""
     signatory fiutur, issuer
@@ -48,6 +46,26 @@ template Asset
       do create this with
            owner = newOwner
 
+template AssetOracle
+  with
+    fiutur : Party
+    observers : [ Party ]
+  where
+    signatory fiutur
+    observer observers
+
+    nonconsuming choice CheckSmartId : Text
+      with
+        requestor : Party
+        smartId : Text
+      controller requestor
+      do
+        assert $ elem requestor observers
+
+        (_, c) <- fetchByKey @Asset (fiutur, smartId)
+
+        pure c.name
+
 setup : Script ()
 setup = script do
 -- user_setup_begin
@@ -61,9 +79,13 @@ setup = script do
 
   createUser (User aliceId (Some alice)) [CanActAs alice]
   createUser (User bobId (Some bob)) [CanActAs bob]
-  createUser (User fiuturId (Some bob)) [CanActAs fiutur]
-
+  createUser (User fiuturId (Some bob)) [CanActAs fiutur]  
 -- user_setup_end
+
+  oracle <- submit fiutur do
+    createCmd AssetOracle with
+      fiutur = fiutur
+      observers = [ alice, bob ]
 
   tvp1 <- submit alice do
     createCmd AssetProposal with
@@ -71,18 +93,16 @@ setup = script do
       owner = alice
       fiutur = fiutur
       name = "TV One"
-      secret = "secret-1"
 
   tv1 <- submit fiutur do
     exerciseCmd tvp1 Approve with smartId = "tv-1"
-    
+
   tvp2 <- submit alice do
     createCmd AssetProposal with
       issuer = alice
       owner = alice
       fiutur = fiutur
       name = "TV Two"
-      secret = "secret-2"
 
   tv2 <- submit fiutur do
     exerciseCmd tvp2 Approve with smartId = "tv-2"
@@ -93,9 +113,19 @@ setup = script do
       owner = bob
       fiutur = fiutur
       name = "TV Two"
-      secret = "secret-2"
 
   tv3 <- submit fiutur do
     exerciseCmd tvp3 Approve with smartId = "tv-3"
-    
+
+  -- This is alice able to retrieve information on her contract through
+  -- an oracle. (Note that this does NOT work when fetching tv-2, referencing
+  -- a contract to which Alice does not have access.)
+  aliceTvName <- submit alice do
+    exerciseCmd oracle CheckSmartId
+      with
+        requestor = alice
+        smartId = "tv-2"
+
+  assertMsg "TV name is not expected" (aliceTvName == "TV Two") 
+
   pure ()
