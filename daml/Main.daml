@@ -4,21 +4,26 @@ import Daml.Script
 
 type AssetKey = (Party, Text)
 
+-- I'm using a propose/accept workflow to ensure that the created asset
+-- contracts have authorizations from both the issuing party and the
+-- 'registry'. The registry authorization is required because it is the
+-- key maintainer.
 template AssetProposal
   with
-    issuer  : Party
-    owner   : Party
-    fiutur  : Party
-    name    : Text
+    issuer    : Party
+    owner     : Party
+    registry    : Party
+    observers : [ Party ]
+    name       : Text
   where
     ensure name /= ""
     signatory issuer
-    observer owner, fiutur
+    observer owner, registry
 
     choice Approve : ContractId Asset
       with
         smartId: Text
-      controller fiutur
+      controller registry
       do create Asset 
           with
             smartId = smartId
@@ -26,17 +31,18 @@ template AssetProposal
 
 template Asset
   with
-    issuer  : Party
-    owner   : Party
-    fiutur  : Party
-    smartId : Text
-    name    : Text
+    issuer    : Party
+    owner     : Party
+    registry    : Party
+    observers : [ Party ]
+    smartId   : Text
+    name      : Text
   where
     ensure name /= ""
-    signatory fiutur, issuer
-    observer owner
+    signatory registry, issuer
+    observer owner :: observers
 
-    key (fiutur, smartId): AssetKey
+    key (registry, smartId): AssetKey
     maintainer key._1
 
     choice Give : ContractId Asset
@@ -48,13 +54,13 @@ template Asset
 
 template AssetOracle
   with
-    fiutur : Party
+    registry : Party
     observers : [ Party ]
   where
-    signatory fiutur
+    signatory registry
     observer observers
 
-    nonconsuming choice CheckSmartId : Text
+    nonconsuming choice CheckSmartId : Bool
       with
         requestor : Party
         smartId : Text
@@ -62,70 +68,96 @@ template AssetOracle
       do
         assert $ elem requestor observers
 
-        (_, c) <- fetchByKey @Asset (fiutur, smartId)
+        v <- visibleByKey @Asset (registry, smartId)
 
-        pure c.name
+        pure v
 
 setup : Script ()
 setup = script do
 -- user_setup_begin
   alice <- allocatePartyWithHint "Alice" (PartyIdHint "Alice")
   bob <- allocatePartyWithHint "Bob" (PartyIdHint "Bob")
-  fiutur <- allocatePartyWithHint "Fiutur" (PartyIdHint "Fiutur")
+  registry <- allocatePartyWithHint "registry" (PartyIdHint "registry")
 
   aliceId <- validateUserId "alice"
   bobId <- validateUserId "bob"
-  fiuturId <- validateUserId "fiutur"
+  registryId <- validateUserId "registry"
 
   createUser (User aliceId (Some alice)) [CanActAs alice]
   createUser (User bobId (Some bob)) [CanActAs bob]
-  createUser (User fiuturId (Some bob)) [CanActAs fiutur]  
+  createUser (User registryId (Some bob)) [CanActAs registry]  
 -- user_setup_end
 
-  oracle <- submit fiutur do
+  oracle <- submit registry do
     createCmd AssetOracle with
-      fiutur = fiutur
+      registry = registry
       observers = [ alice, bob ]
 
   tvp1 <- submit alice do
     createCmd AssetProposal with
       issuer = alice
       owner = alice
-      fiutur = fiutur
+      registry = registry
+      observers = []
       name = "TV One"
 
-  tv1 <- submit fiutur do
+  tv1 <- submit registry do
     exerciseCmd tvp1 Approve with smartId = "tv-1"
 
   tvp2 <- submit alice do
     createCmd AssetProposal with
       issuer = alice
       owner = alice
-      fiutur = fiutur
+      registry = registry
+      observers = []
       name = "TV Two"
 
-  tv2 <- submit fiutur do
+  tv2 <- submit registry do
     exerciseCmd tvp2 Approve with smartId = "tv-2"
     
   tvp3 <- submit bob do
     createCmd AssetProposal with
       issuer = bob
       owner = bob
-      fiutur = fiutur
-      name = "TV Two"
+      registry = registry
+      observers = [ alice ]
+      name = "TV Three"
 
-  tv3 <- submit fiutur do
+  tv3 <- submit registry do
     exerciseCmd tvp3 Approve with smartId = "tv-3"
 
-  -- This is alice able to retrieve information on her contract through
-  -- an oracle. (Note that this does NOT work when fetching tv-2, referencing
-  -- a contract to which Alice does not have access.)
-  aliceTvName <- submit alice do
+  tvp4 <- submit bob do
+    createCmd AssetProposal with
+      issuer = bob
+      owner = bob
+      registry = registry
+      observers = [ ]
+      name = "TV Bob Only"
+
+  tv4 <- submit registry do
+    exerciseCmd tvp4 Approve with smartId = "tv-4"
+
+-- This succeeds because alice is listed as an observer to the tv-3
+-- contract.
+  visible3 <- submit alice do
     exerciseCmd oracle CheckSmartId
       with
         requestor = alice
-        smartId = "tv-2"
+        smartId = "tv-3"
 
-  assertMsg "TV name is not expected" (aliceTvName == "TV Two") 
+  assertMsg "TV 3 should be visible" (visible3) 
+
+  -- This fails with an indication that the tv-4 contract is present but not
+  -- visible to alice. (The detailed error you see running this as a plan submit
+  -- is a developer aid that the script engine provides. Against a production
+  -- ledger, it would be returned as an error code related to key visiblity.)
+  --
+  -- This error is also a category of errors that cannot be detected or handled on
+  -- ledger.
+  submitMustFail alice do
+    exerciseCmd oracle CheckSmartId
+      with
+        requestor = alice
+        smartId = "tv-4"
 
   pure ()
